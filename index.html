@@ -1,0 +1,253 @@
+<html>
+<meta charset="UTF-8">
+<head>
+  <link rel="stylesheet" href="css/bootstrap.min.css">
+  <link rel="stylesheet" href="css/index.css">
+  <link rel="stylesheet" href="css/theme.bootstrap_4.css">
+  <link rel="stylesheet" href="css/datepicker.min.css">
+</head>
+<body>
+
+<div class="form-group">
+  <label for="unitRosterXslx">Choose a Unit Roster to import</label>
+  <input type="file" id="unitRosterXslx" name="unitRosterXslx"/>
+</div>
+<div>
+  <label for="unitRosterJson">Choose the Unit Roster report to process</label>
+  <input type="file" id="unitRosterJson" name="unitRosterJson"/>
+</div>
+
+<div class="form-group">
+  <label for="uaPercent">Choose the percent of Soldiers to take the UA</label>
+  <input id="uaPercent" type="text" placeholder="" />
+  <label for="uaDate">Select the date for the UA</label>
+  <input id="uaDate" type="text" placeholder="" />
+  </br>
+  <button id="generateUARoster" type="button" class="btn btn-primary btn-lg">Generate UA Roster</button>
+  <button id="exportUnitRoster" type="button" class="btn btn-primary btn-lg">Export Unit Roster</button>
+<p id="numPeople" class=""></p>
+</div>
+
+<table id="dtpTable" class="table table-dark table-bordered" > </table> 
+<script src="js/jquery-3.4.1.min.js"></script>
+<script src="js/jquery.csv.min.js"></script>
+<script src="js/luxon.min.js"></script>
+<script src="js/jszip.js"></script>
+<script src="js/xlsx.js"></script>
+<script src="js/jquery.tablesorter.min.js"></script>
+<script src="js/datepicker.min.js"></script>
+
+<script>
+var DateTime = luxon.DateTime
+var unitRoster = []
+
+let uaDate = document.getElementById('uaDate')
+
+const uaDatePicker= datepicker(uaDate, {
+  formatter: (input, date, instance) => {
+    const value = date.toISOString().slice(0,10)
+    uaDate.value = value 
+  }
+})
+
+document.querySelector('#generateUARoster').addEventListener('click', function (event) {
+  let localUnitRoster = unitRoster;
+  let uaPercent = document.querySelector('#uaPercent').value
+  let uaRoster = generatePercentRoster(localUnitRoster, uaPercent)
+  let numPeopleElement = document.getElementById('numPeople')
+  numPeopleElement.innerHTML = uaPercent + " percent selected, " + uaRoster.length + " people"
+  displayRosterTable(uaRoster);
+})
+
+document.querySelector('#exportUnitRoster').addEventListener('click', event => {
+  let localUnitRoster = unitRoster;
+  exportRoster(localUnitRoster);
+})
+
+document.querySelector('#unitRosterJson').addEventListener('change', event => {
+  let unitRosterFile = event.target.files[0];
+  let reader = new FileReader();
+  reader.onload = e => {
+    unitRoster = JSON.parse(reader.result);
+    displayRosterTable(unitRoster);
+  }
+  reader.onerror = ex => {
+    console.log(ex);
+  };
+  reader.readAsText(unitRosterFile);
+}, false);
+
+// this contains personnel it will contain records that list out
+document.querySelector('#unitRosterXslx').addEventListener('change', function (event) {
+  let unitRosterFile = event.target.files[0];
+  let reader = new FileReader();
+  reader.onload = e => {
+    binary = "";
+    bytes = new Uint8Array(e.target.result);
+    length = bytes.byteLength;
+    for (var i = 0; i < length; i += 1) {
+      binary += String.fromCharCode(bytes[i])
+    };
+    workbook = XLSX.read(binary, {
+      type: 'binary'
+    });
+    unitRoster = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
+
+    // only keep the fields that we care about
+    unitRoster = unitRoster.map(person => {
+      return {
+        'Last Name': person['Last Name'],
+        'First Name': person['First Name'],
+        'EDIPI': person['EDIPI'],
+        'Unit Attached': person['Unit Attached'],
+        'Unit Assigned': person['Unit Assigned'],
+        'Rank': person['Rank'],
+        'Available': true,
+      };
+    });
+    unitRoster = dedupRoster(unitRoster, []);
+    displayRosterTable(unitRoster);
+  }
+  reader.onerror = ex => {
+    console.log(ex);
+  };
+  reader.readAsArrayBuffer(unitRosterFile);
+}, false);
+
+function displayRosterTable (roster) {
+  let unitRosterTable = document.getElementById('dtpTable');
+
+  // delete the current version of the table
+  while(unitRosterTable.hasChildNodes()) {
+    unitRosterTable.removeChild(unitRosterTable.firstChild);
+  }
+
+  let unitRosterTableHead = unitRosterTable.createTHead();
+  let unitRosterTableHeadRow = unitRosterTableHead.insertRow(-1);
+  let unitRosterTableHeadCell = unitRosterTableHeadRow.insertCell(-1);
+  unitRosterTableHeadCell.innerHTML = 'Unit';
+
+  unitRosterTableHeadCell = unitRosterTableHeadRow.insertCell(-1);
+  unitRosterTableHeadCell.innerHTML = 'Name';
+
+  unitRosterTableHeadCell = unitRosterTableHeadRow.insertCell(-1);
+  unitRosterTableHeadCell.innerHTML = 'Rank';
+
+  unitRosterTableHeadCell = unitRosterTableHeadRow.insertCell(-1);
+  unitRosterTableHeadCell.innerHTML = 'EDIPI';
+
+  let unitRosterTableBody = document.createElement('tbody');
+
+  let uaDate = document.getElementById('uaDate').value;
+  let uaDateParsed = '';
+  if (uaDate == undefined || uaDate === '') {
+    uaDateParsed = luxon.DateTime.local();
+  } else {
+    uaDateParsed = luxon.DateTime.fromISO(uaDate);
+  };
+
+  unitRosterTable.appendChild(unitRosterTableBody);
+
+  // generate the table with a person on each row
+  roster.forEach(person => {
+    unitRosterTableRow = unitRosterTableBody.insertRow(-1);
+
+    if (!person.Available) {
+      unitRosterTableRow.bgColor = 'red'
+    }
+
+    unitRosterTableRow.onclick = cellClickHandler
+    unitRosterTableCell = unitRosterTableRow.insertCell(-1);
+    unitRosterTableCell.innerHTML = person['Unit Assigned'];
+
+    unitRosterTableCell = unitRosterTableRow.insertCell(-1);
+    unitRosterTableCell.innerHTML = person['Last Name'] + ', ' + person['First Name'];
+    unitRosterTableCell = unitRosterTableRow.insertCell(-1);
+    unitRosterTableCell.innerHTML = person['Rank'];
+
+    unitRosterTableCell = unitRosterTableRow.insertCell(-1);
+    unitRosterTableCell.innerHTML = person['EDIPI'];
+    unitRosterTableCell.setAttribute('data-edipi', person['EDIPI'])
+
+  })
+  $("#dtpTable").tablesorter({
+    theme: 'bootstrap',
+    sortReset: true,
+    sortRestart: true,
+  })
+  $("#dtpTable").trigger("updateAll");
+}
+
+function cellClickHandler (e) {
+// make Soldiers selectable / not selectable
+  let personRow = e.srcElement.parentElement;
+  let edipi = parseInt(personRow.lastChild.getAttribute('data-edipi'))
+
+  person = unitRoster.filter(person => parseInt(person.EDIPI) === edipi)
+
+  // set the 'Available' to opposite of the availability
+  unitRoster = toggleAvail(unitRoster, person[0])
+
+  // toggle the cell background color from red to off
+  if (personRow.bgColor == 'red') {
+    personRow.bgColor = ''
+  } else {
+   personRow.bgColor = 'red'
+  }
+};
+
+function toggleAvail (roster, selPerson) {
+  roster = roster.map(person => {
+    if (selPerson.EDIPI === person.EDIPI) {
+      person.Available = !person.Available;
+    }
+    return person;
+  })
+  return roster;
+}
+
+function dedupRoster (roster) {
+  let newRoster = [];
+  let edipiArray = [];
+  roster.forEach(person => {
+    if (!edipiArray.includes(person.EDIPI)) {
+      newRoster.push(person);
+      edipiArray.push(person.EDIPI);
+    };
+  });
+  return newRoster;
+}
+
+function getRandomPerson (roster) {
+  let randIndex = Math.floor(Math.random() * roster.length)
+  return roster[randIndex]
+}
+
+function exportRoster (roster) {
+  let file = new Blob([JSON.stringify(roster)], { type: 'text' });
+  let a = document.createElement('a');
+  let url = URL.createObjectURL(file);
+  a.href = url;
+  a.download = 'uaRoster';
+  a.click();
+}
+
+function generatePercentRoster (roster, percent) {
+  // get the total number of people to select
+  let selectedPeople = []
+  let selectedPerson = ''
+  let numToSelect = Math.ceil(roster.length * percent / 100)
+
+  // remove people that are unavailable
+  roster = roster.filter(person => person.Available === true)
+
+  for (let i = 0; i < numToSelect; i = i + 1) {
+    selectedPerson = getRandomPerson(roster)
+    selectedPeople.push(selectedPerson)
+    roster = roster.filter(person => person.EDIPI !== selectedPerson.EDIPI)
+  }
+  return selectedPeople
+}
+</script>
+</body>
+</html>
